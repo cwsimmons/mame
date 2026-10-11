@@ -145,7 +145,8 @@ template <unsigned Channel> u16 rtpc_iocc_device::alt_r(offs_t offset, u16 mem_m
 			mode = rsc_mode::RSC_T;
 		}
 
-		if (!m_rsc->mem_load(address, data, mem_mask, mode) && !machine().side_effects_disabled())
+		// i/o channel byte lanes are swapped relative to system memory
+		if (!m_rsc->mem_load(address, data, swapendian_int16(mem_mask), mode) && !machine().side_effects_disabled())
 			dma_error(Channel, CSR_DEXK);
 
 		data = swapendian_int16(data);
@@ -188,7 +189,8 @@ template <unsigned Channel> void rtpc_iocc_device::alt_w(offs_t offset, u16 data
 		LOGMASKED(LOG_DMA, "alt_w %s 0x%06x tcw 0x%04x address 0x%08x data 0x%04x mask 0x%04x\n",
 			region ? "region" : "page", offset, tcw, address, data, mem_mask);
 
-		if (!m_rsc->mem_store(address, swapendian_int16(data), mem_mask, mode) && !machine().side_effects_disabled())
+		// i/o channel byte lanes are swapped relative to system memory
+		if (!m_rsc->mem_store(address, swapendian_int16(data), swapendian_int16(mem_mask), mode) && !machine().side_effects_disabled())
 			dma_error(Channel, CSR_DEXK);
 	}
 	else
