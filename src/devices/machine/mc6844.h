@@ -54,6 +54,7 @@ public:
 	auto out_txak_callback() { return m_out_txak_cb.bind(); }
 	auto out_drq1_callback() { return m_out_drq1_cb.bind(); }
 	auto out_drq2_callback() { return m_out_drq2_cb.bind(); }
+	auto out_dend_callback() { return m_out_dend_cb.bind(); }
 	auto in_memr_callback() { return m_in_memr_cb.bind(); }
 	auto out_memw_callback() { return m_out_memw_cb.bind(); }
 
@@ -77,6 +78,7 @@ protected:
 	devcb_write8        m_out_txak_cb;
 	devcb_write_line    m_out_drq1_cb;
 	devcb_write_line    m_out_drq2_cb;
+	devcb_write_line    m_out_dend_cb;
 	devcb_read8 m_in_memr_cb;
 	devcb_write8 m_out_memw_cb;
 	devcb_read8::array<4> m_in_ior_cb;

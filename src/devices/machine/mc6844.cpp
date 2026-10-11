@@ -36,7 +36,11 @@
   Aaron Giles.
 
   TODO:
-  - Memory to Device transfers
+  - Data chaining is implemented as a single reload of the chained channel
+    from channel 3, after which chaining is disabled; verify on hardware
+  - IRQ/DEND is modelled as separate outputs; DEND is pulsed during the
+    last transfer of every block (including a block which causes a chain
+    reload); verify on hardware
 
 **********************************************************************/
 
@@ -84,12 +88,17 @@ mc6844_device::mc6844_device(const machine_config &mconfig, const char *tag, dev
 	, m_out_txak_cb(*this)
 	, m_out_drq1_cb(*this)
 	, m_out_drq2_cb(*this)
+	, m_out_dend_cb(*this)
 	, m_in_memr_cb(*this, 0)
 	, m_out_memw_cb(*this)
 	, m_in_ior_cb(*this, 0)
 	, m_out_iow_cb(*this)
 	, m_state(STATE_S0)
 	, m_icount(0)
+	, m_current_channel(0)
+	, m_last_channel(0)
+	, m_dgrnt(false)
+	, m_dreq{ false, false, false, false }
 {
 }
 
@@ -110,6 +119,7 @@ void mc6844_device::device_start()
 	save_item(NAME(m_current_channel));
 	save_item(NAME(m_last_channel));
 	save_item(NAME(m_dgrnt));
+	save_item(NAME(m_dreq));
 }
 
 //-------------------------------------------------
@@ -167,7 +177,8 @@ void mc6844_device::execute_run()
 					// Rotating or static channel prioritizations
 					int current_channel = priorities[((m_m6844_priority & 0x80) ? m_last_channel : 3) & 3][prio];
 
-				if (m_m6844_channel[current_channel].active == 1 && m_dreq[current_channel] == ASSERT_LINE)
+					// channels with an exhausted byte count do not participate
+					if (m_m6844_channel[current_channel].active == 1 && m_dreq[current_channel] == ASSERT_LINE && m_m6844_channel[current_channel].counter != 0)
 					{
 						m_current_channel = m_last_channel = current_channel;
 						m_state = STATE_S0;
@@ -191,9 +202,8 @@ void mc6844_device::execute_run()
 			}
 			else
 			{
-				LOGSTATE("Suspend in S0\n");
-				suspend_until_trigger(1, true);
-				m_icount = 0;
+				// channel disabled or exhausted: re-arbitrate
+				m_state = STATE_SI;
 			}
 			break;
 		case STATE_S1: // Wait for Tx RQ == 1
@@ -215,6 +225,11 @@ void mc6844_device::execute_run()
 					m_out_drq2_cb(CLEAR_LINE);
 					break;
 				}
+			}
+			else if ((m_m6844_channel[m_current_channel].control & 0x06) != 0x02)
+			{
+				// request withdrawn in a single-byte mode: re-arbitrate
+				m_state = STATE_SI;
 			}
 			else
 			{
@@ -240,27 +255,46 @@ void mc6844_device::execute_run()
 					}
 					else // dma write to device from memory
 					{
-						uint8_t data = 0;
-						LOGTFR("DMA from memory location to device %04x: -> %02x\n", m_m6844_channel[m_current_channel].address, data );
-						//uint8_t data = m_in_memr_cb(m_m6844_channel[m_current_channel].address);
-						//m_out_iow_cb[m_current_channel](data);
+						uint8_t const data = m_in_memr_cb(m_m6844_channel[m_current_channel].address);
+						LOGTFR("DMA%d from memory location %04x to device: -> %02x\n", m_current_channel, m_m6844_channel[m_current_channel].address, data );
+						m_out_iow_cb[m_current_channel](data);
 					}
 
 					if (m_m6844_channel[m_current_channel].control & 0x08)
 					{
-						m_m6844_channel[m_current_channel].address--;
+						m_m6844_channel[m_current_channel].address = (m_m6844_channel[m_current_channel].address - 1) & 0xffff;
 					}
 					else
 					{
-						m_m6844_channel[m_current_channel].address++;
+						m_m6844_channel[m_current_channel].address = (m_m6844_channel[m_current_channel].address + 1) & 0xffff;
 					}
 
-					m_m6844_channel[m_current_channel].counter--;
+					m_m6844_channel[m_current_channel].counter = (m_m6844_channel[m_current_channel].counter - 1) & 0xffff;
 
 					if (m_m6844_channel[m_current_channel].counter == 0)
 					{
+						// dma end is signalled during the last transfer of a block
+						m_out_dend_cb(ASSERT_LINE);
+						m_out_dend_cb(CLEAR_LINE);
+					}
+
+					if (m_m6844_channel[m_current_channel].counter == 0 && (m_m6844_chain & 0x01) && (m_current_channel == ((m_m6844_chain >> 1) & 0x03)))
+					{
+						// data chaining: reload the chained channel from channel 3
+						LOGTFR("DMA%d chained from channel 3 address %04x count %04x\n", m_current_channel, m_m6844_channel[3].address, m_m6844_channel[3].counter);
+						m_m6844_channel[m_current_channel].address = m_m6844_channel[3].address;
+						m_m6844_channel[m_current_channel].counter = m_m6844_channel[3].counter;
+						m_m6844_chain &= ~0x01;
+
 						m_out_drq1_cb(CLEAR_LINE);
 						m_out_drq2_cb(CLEAR_LINE);
+						m_state = STATE_SI;
+					}
+					else if (m_m6844_channel[m_current_channel].counter == 0)
+					{
+						m_out_drq1_cb(CLEAR_LINE);
+						m_out_drq2_cb(CLEAR_LINE);
+						m_m6844_channel[m_current_channel].control &= ~0x40;
 						m_m6844_channel[m_current_channel].control |= 0x80;
 						m6844_update_interrupt();
 						m_state = STATE_SI;
@@ -271,7 +305,8 @@ void mc6844_device::execute_run()
 						{
 						case 0x00:
 							LOGTFR("Mode 2 - single-byte transfer HALT steal mode\n");
-							m_state = STATE_S1;
+							// re-arbitrate between channels after each byte
+							m_state = STATE_SI;
 							m_out_drq2_cb(CLEAR_LINE);
 							break;
 						case 0x02:
@@ -280,7 +315,8 @@ void mc6844_device::execute_run()
 							break;
 						case 0x04:
 							LOGTFR("Mode 1 - single-byte transfer TSC steal mode\n");
-							m_state = STATE_S1;
+							// re-arbitrate between channels after each byte
+							m_state = STATE_SI;
 							m_out_drq1_cb(CLEAR_LINE);
 							break;
 						default: // Undefined - needs verification on real hardware
@@ -292,6 +328,13 @@ void mc6844_device::execute_run()
 						}
 					}
 				}
+			}
+			else if (m_dreq[m_current_channel] != ASSERT_LINE && (m_m6844_channel[m_current_channel].control & 0x06) != 0x02)
+			{
+				// request withdrawn in a single-byte mode: re-arbitrate
+				m_out_drq1_cb(CLEAR_LINE);
+				m_out_drq2_cb(CLEAR_LINE);
+				m_state = STATE_SI;
 			}
 			else
 			{
