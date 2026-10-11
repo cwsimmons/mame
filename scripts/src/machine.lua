@@ -4254,6 +4254,18 @@ end
 
 ---------------------------------------------------
 --
+--@src/devices/machine/wd1933.h,MACHINES["WD1933"] = true
+---------------------------------------------------
+
+if MACHINES["WD1933"] then
+	files {
+		MAME_DIR .. "src/devices/machine/wd1933.cpp",
+		MAME_DIR .. "src/devices/machine/wd1933.h",
+	}
+end
+
+---------------------------------------------------
+--
 --@src/devices/machine/wd1010.h,MACHINES["WD1010"] = true
 ---------------------------------------------------
 
