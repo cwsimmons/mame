@@ -21490,6 +21490,9 @@ rtpc020
 rtpc025
 rtpca25
 
+@source:ibm/t5080.cpp
+t5080
+
 @source:ibm/thinkpad600.cpp
 tpad600
 tpad600e
