@@ -108,6 +108,7 @@
 // busses and connectors
 #include "bus/isa/isa.h"
 #include "bus/isa/isa_cards.h"
+#include "bus/isa/5080aa.h"
 #include "bus/isa/5080pa.h"
 #include "bus/isa/amgda.h"
 #include "bus/isa/ega.h"
@@ -157,6 +158,7 @@ protected:
 	template <bool SCC> void iocc_pio_map(address_map &map) ATTR_COLD;
 
 	void common(machine_config &config);
+	void isa16_bus_master(device_t *device);
 
 	void crra_w(u8 data);
 	void crrb_w(u8 data);
@@ -506,6 +508,7 @@ static void rtpc_isa8_cards(device_slot_interface &device)
 
 static void rtpc_isa16_cards(device_slot_interface &device)
 {
+	device.option_add("5080aa", ISA16_5080AA);
 	device.option_add("5080pa", ISA16_5080PA);
 	device.option_add("amgda", ISA16_AMGDA);
 	device.option_add("fddda", ISA16_FDDDA);
@@ -521,6 +524,16 @@ static void rtpc_copro_cards(device_slot_interface &device)
 	// coprocessor slots do not support memory expansion options due to
 	// reassignment of B19 (REFRESH)
 	device.option_remove("pcat512me");
+}
+
+void rtpc_state::isa16_bus_master(device_t *device)
+{
+	// route the 5080 attachment adapter bus master cycles through the iocc
+	// alternate controller translation (arbitration level 6)
+	isa16_5080aa_device &card = downcast<isa16_5080aa_device &>(*device);
+
+	card.bus_r().set(m_iocc, FUNC(rtpc_iocc_device::alt_r<6>));
+	card.bus_w().set(m_iocc, FUNC(rtpc_iocc_device::alt_w<6>));
 }
 
 void rtpc_state::ibm6150(machine_config &config)
@@ -553,14 +566,14 @@ void rtpc_state::ibm6150(machine_config &config)
 	m_scc->out_txdb_callback().set(port1, FUNC(rs232_port_device::write_txd));
 
 	// ISA slots
-	ISA16_SLOT(config, m_slot[0], m_isa->clock(), m_isa, rtpc_isa16_cards, "fddda",    false); // slot 1: disk/diskette adapter
-	ISA16_SLOT(config, m_slot[1], m_isa->clock(), m_isa, rtpc_isa16_cards, nullptr,    false); // slot 2: option (second fddda/esdi must be here)
+	ISA16_SLOT(config, m_slot[0], m_isa->clock(), m_isa, rtpc_isa16_cards, "fddda",    false).set_option_machine_config("5080aa", [this](device_t *device) { isa16_bus_master(device); }); // slot 1: disk/diskette adapter
+	ISA16_SLOT(config, m_slot[1], m_isa->clock(), m_isa, rtpc_isa16_cards, nullptr,    false).set_option_machine_config("5080aa", [this](device_t *device) { isa16_bus_master(device); }); // slot 2: option (second fddda/esdi must be here)
 	ISA8_SLOT(config,  m_slot[2], m_isa->clock(), m_isa, rtpc_isa8_cards,  "mda",      false); // slot 3: option (mda must be here, ega must be here or slot 6)
-	ISA16_SLOT(config, m_slot[3], m_isa->clock(), m_isa, rtpc_isa16_cards, nullptr,    false); // slot 4: option
-	ISA16_SLOT(config, m_slot[4], m_isa->clock(), m_isa, rtpc_isa16_cards, nullptr,    false); // slot 5: option
+	ISA16_SLOT(config, m_slot[3], m_isa->clock(), m_isa, rtpc_isa16_cards, nullptr,    false).set_option_machine_config("5080aa", [this](device_t *device) { isa16_bus_master(device); }); // slot 4: option
+	ISA16_SLOT(config, m_slot[4], m_isa->clock(), m_isa, rtpc_isa16_cards, nullptr,    false).set_option_machine_config("5080aa", [this](device_t *device) { isa16_bus_master(device); }); // slot 5: option
 	ISA8_SLOT(config,  m_slot[5], m_isa->clock(), m_isa, rtpc_isa8_cards,  "baseband", false); // slot 6: option
-	ISA16_SLOT(config, m_slot[6], m_isa->clock(), m_isa, rtpc_isa16_cards, nullptr,    false); // slot 7: option
-	ISA16_SLOT(config, m_slot[7], m_isa->clock(), m_isa, rtpc_copro_cards, nullptr,    false); // slot 8: coprocessor/option
+	ISA16_SLOT(config, m_slot[6], m_isa->clock(), m_isa, rtpc_isa16_cards, nullptr,    false).set_option_machine_config("5080aa", [this](device_t *device) { isa16_bus_master(device); }); // slot 7: option
+	ISA16_SLOT(config, m_slot[7], m_isa->clock(), m_isa, rtpc_copro_cards, nullptr,    false).set_option_machine_config("5080aa", [this](device_t *device) { isa16_bus_master(device); }); // slot 8: coprocessor/option
 }
 
 void rtpc_state::ibm6151(machine_config &config)
@@ -570,11 +583,11 @@ void rtpc_state::ibm6151(machine_config &config)
 
 	// ISA slots
 	ISA8_SLOT(config,  m_slot[0], m_isa->clock(), m_isa, rtpc_isa8_cards,  "mda",      false); // slot 1: option (mda or ega must be here)
-	ISA16_SLOT(config, m_slot[1], m_isa->clock(), m_isa, rtpc_isa16_cards, "baseband", false); // slot 2: option
-	ISA16_SLOT(config, m_slot[2], m_isa->clock(), m_isa, rtpc_isa16_cards, nullptr,    false); // slot 2: option
-	ISA16_SLOT(config, m_slot[3], m_isa->clock(), m_isa, rtpc_isa16_cards, nullptr,    false); // slot 4: option
-	ISA16_SLOT(config, m_slot[4], m_isa->clock(), m_isa, rtpc_copro_cards, nullptr,    false); // slot 5: coprocessor/option
-	ISA16_SLOT(config, m_slot[5], m_isa->clock(), m_isa, rtpc_isa16_cards, "fddda",    false); // slot 6: disk/diskette adapter
+	ISA16_SLOT(config, m_slot[1], m_isa->clock(), m_isa, rtpc_isa16_cards, "baseband", false).set_option_machine_config("5080aa", [this](device_t *device) { isa16_bus_master(device); }); // slot 2: option
+	ISA16_SLOT(config, m_slot[2], m_isa->clock(), m_isa, rtpc_isa16_cards, nullptr,    false).set_option_machine_config("5080aa", [this](device_t *device) { isa16_bus_master(device); }); // slot 2: option
+	ISA16_SLOT(config, m_slot[3], m_isa->clock(), m_isa, rtpc_isa16_cards, nullptr,    false).set_option_machine_config("5080aa", [this](device_t *device) { isa16_bus_master(device); }); // slot 4: option
+	ISA16_SLOT(config, m_slot[4], m_isa->clock(), m_isa, rtpc_copro_cards, nullptr,    false).set_option_machine_config("5080aa", [this](device_t *device) { isa16_bus_master(device); }); // slot 5: coprocessor/option
+	ISA16_SLOT(config, m_slot[5], m_isa->clock(), m_isa, rtpc_isa16_cards, "fddda",    false).set_option_machine_config("5080aa", [this](device_t *device) { isa16_bus_master(device); }); // slot 6: disk/diskette adapter
 }
 
 ROM_START(ibm6150)
