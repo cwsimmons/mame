@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<!--
+license:CC0-1.0
+copyright-holders:Christopher Simmons
+IBM 5085 diagnostic LEDs
+-->
+<mamelayout version="2">
+	<element name="led" defstate="0">
+		<led7seg>
+			<color red="1.0" green="0.0" blue="0.0" />
+		</led7seg>
+	</element>
+	<element name="mcheck_led" defstate="0">
+		<disk state="1">
+			<color red="1.0" green="0.0" blue="0.0" />
+		</disk>
+	</element>
+	<element name="machine_check">
+		<text string="Machine Check">
+			<color red="1.0" green="1.0" blue="1.0" />
+		</text>
+	</element>
+	<element name="toggle" defstate="0">
+		<rect><color red="0.15" green="0.15" blue="0.15" /></rect>          <!-- switch body -->
+		<rect state="0">                                                     <!-- lever down -->
+			<bounds x="0.25" y="0.5" width="0.5" height="0.45" />
+			<color red="0.8" green="0.8" blue="0.8" />
+		</rect>
+		<rect state="1">                                                     <!-- lever up -->
+			<bounds x="0.25" y="0.05" width="0.5" height="0.45" />
+			<color red="0.2" green="0.9" blue="0.2" />
+		</rect>
+	</element>
+	<element name="label_test">
+		<text string="TEST"><color red="1.0" green="1.0" blue="1.0" /></text>
+	</element>
+
+	<view name="Diagnostic LEDs">
+		<element name="mcheck_text" ref="machine_check">
+			<bounds x="40" y="0" width="40" height="15" />
+		</element>
+		<element name="mcheck_led" ref="mcheck_led">
+			<bounds x="50" y="10" width="10" height="10" />
+		</element>
+		<element name="led1" ref="led">
+			<bounds x="0" y="0" width="15" height="20" />
+		</element>
+		<element name="led0" ref="led">
+			<bounds x="20" y="0" width="15" height="20" />
+		</element>
+		<element ref="toggle" inputtag="SWITCHES" inputmask="0x80">
+			<bounds x="80" y="30" width="20" height="30" />
+		</element>
+		<element ref="label_test">
+			<bounds x="70" y="0" width="40" height="12" />
+		</element>
+	</view>
+</mamelayout>

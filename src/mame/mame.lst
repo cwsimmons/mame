@@ -21467,6 +21467,9 @@ ibm3153
 @source:ibm/ibm3477.cpp
 ibm3477
 
+@source:ibm/ibm5085.cpp
+ibm50852a
+
 @source:ibm/ibm5100.cpp
 ibm5100
 ibm5110
