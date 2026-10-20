@@ -11,7 +11,13 @@
 
 #include "ibm5085.lh"
 
+#define VERBOSE (LOG_GENERAL)
+#include "logmacro.h"
+
 namespace {
+
+static constexpr offs_t RAM_BASE = 0x000000;
+static constexpr offs_t RAM_SIZE = 0x080000;
 
 class ibm5085_state : public driver_device
 {
@@ -33,10 +39,11 @@ public:
 protected:
 	virtual void machine_start() override ATTR_COLD;
 	virtual void machine_reset() override ATTR_COLD;
+	virtual void device_post_load() override ATTR_COLD;
 
 private:
 	// Finders
-	required_device<cpu_device> m_att_cpu;
+	required_device<m68010_device> m_att_cpu;
 	required_region_ptr<u16> m_att_rom;
 	memory_view m_bootvect;
 	output_finder<2> m_diag_leds;
@@ -48,14 +55,38 @@ private:
 	TIMER_CALLBACK_MEMBER(boot_timeout);
 
 	void att_map(address_map &map) ATTR_COLD;
+
+	// 0xFFF000 Block
+	void parity_select_w(u8 data);
 	void diag_led_w(u8 data);
 	u8 testsw_r();
+	void periph_baud_w(u8 data);
+	void rs232_baud_w(u8 data);
 	u16 ext_bus_r(offs_t offset);
+
+	u16 berr_r(offs_t offset, u16 mem_mask);
+	void berr_w(offs_t offset, u16 data, u16 mem_mask);
+
+	u8 m_parity_odd = 0;
+	std::unique_ptr<u8[]> m_parity_bits;
+	u32 m_parity_odd_count = 0;
+	bool m_parity_tap_active = false;
+	memory_passthrough_handler m_parity_tap;
+
+	void parity_update_tap();
+	void parity_tap_w(offs_t offset, u16 &data, u16 mem_mask);
+	void parity_tap_r(offs_t offset, u16 &data, u16 mem_mask);
+
 };
 
 void ibm5085_state::machine_start()
 {
 	m_boot_timer = timer_alloc(FUNC(ibm5085_state::boot_timeout), this);
+
+	m_parity_bits = std::make_unique<u8[]>(RAM_SIZE / 8);
+	save_item(NAME(m_parity_odd));
+	save_item(NAME(m_parity_odd_count));
+	save_pointer(NAME(m_parity_bits), RAM_SIZE / 8);
 }
 
 void ibm5085_state::machine_reset()
@@ -64,20 +95,40 @@ void ibm5085_state::machine_reset()
 	m_boot_timer->adjust(attotime::from_usec(4));
 }
 
+void ibm5085_state::device_post_load()
+{
+	m_parity_tap_active = false;
+	m_parity_tap.remove();
+	parity_update_tap();
+}
+
 void ibm5085_state::att_map(address_map &map)
 {
+	map(0x000000, 0xffffff).rw(FUNC(ibm5085_state::berr_r), FUNC(ibm5085_state::berr_w));
+
 	map(0x000000, 0x7ffff).ram().share("ram_private");
 	map(0xfd0000, 0xfd7fff).rom().mirror(0x008000).region("att_rom", 0);
 	map(0xfe0000, 0xfe7fff).rom().mirror(0x008000).region("att_rom", 0);
 
-	map(0xfff002, 0xfff002).w(FUNC(ibm5085_state::diag_led_w)).umask16(0xff00);
-	map(0xfff005, 0xfff005).r(FUNC(ibm5085_state::testsw_r)).umask16(0x00ff);
-	map(0xfff00c, 0xfff00f).r(FUNC(ibm5085_state::ext_bus_r));
+	map(0xfff000, 0xfff001).w(FUNC(ibm5085_state::parity_select_w)).umask16(0x00ff).nopr();
+	map(0xfff002, 0xfff003).w(FUNC(ibm5085_state::diag_led_w)).umask16(0xff00).nopr();
+	map(0xfff004, 0xfff005).r(FUNC(ibm5085_state::testsw_r)).umask16(0x00ff).nopw();
+	map(0xfff006, 0xfff007).w(FUNC(ibm5085_state::periph_baud_w)).umask16(0x00ff).nopr();
+	map(0xfff008, 0xfff009).w(FUNC(ibm5085_state::rs232_baud_w)).umask16(0x00ff).nopr();
+	map(0xfff00a, 0xfff00b).nopr().nopw();
+	map(0xfff00c, 0xfff00f).r(FUNC(ibm5085_state::ext_bus_r)).nopw();
 
 	map(0xff0040, 0xff0047).rw(m_periph12_uart, FUNC(i8274_device::ba_cd_r), FUNC(i8274_device::ba_cd_w)).umask16(0x00ff);
 
 	map(0x000000, 0x000007).view(m_bootvect);
 	m_bootvect[0](0x000000, 0x000007).rom().region("att_rom", 0);
+}
+
+void ibm5085_state::parity_select_w(u8 data) {
+	m_parity_odd = BIT(data, 0);
+	LOG("parity_reg = 0x%.2x\n", data);
+	LOG("m_parity_odd = %d\n", m_parity_odd);
+	parity_update_tap();
 }
 
 void ibm5085_state::diag_led_w(u8 data)
@@ -114,12 +165,99 @@ u8 ibm5085_state::testsw_r()
 	return data;
 }
 
+void ibm5085_state::periph_baud_w(u8 data) {
+
+}
+
+void ibm5085_state::rs232_baud_w(u8 data) {
+
+}
+
 u16 ibm5085_state::ext_bus_r(offs_t offset)
 {
 	if (offset == 0) {
-		return 0xff00;
+		return 0x71fc;
 	} else {
-		return 0xffff;
+		return 0xfffe;
+	}
+}
+
+u16 ibm5085_state::berr_r(offs_t offset, u16 mem_mask)
+{
+	if (!machine().side_effects_disabled())
+	{
+		offs_t const address = (offset << 1) | (ACCESSING_BITS_8_15 ? 0 : 1);
+		m_att_cpu->set_buserror_details(address, 1, m_att_cpu->get_fc());   // 1 = read
+		m_att_cpu->set_input_line(M68K_LINE_BUSERROR, ASSERT_LINE);
+	}
+	return 0xffff;
+}
+
+void ibm5085_state::berr_w(offs_t offset, u16 data, u16 mem_mask)
+{
+	if (!machine().side_effects_disabled())
+	{
+		offs_t const address = (offset << 1) | (ACCESSING_BITS_8_15 ? 0 : 1);
+		m_att_cpu->set_buserror_details(address, 0, m_att_cpu->get_fc());   // 0 = write
+		m_att_cpu->set_input_line(M68K_LINE_BUSERROR, ASSERT_LINE);
+	}
+}
+
+// the tap is only needed while something can mismatch: odd mode selected, or odd bytes still in RAM
+void ibm5085_state::parity_update_tap()
+{
+	bool const needed = m_parity_odd || m_parity_odd_count;
+
+	if (needed && !m_parity_tap_active)
+	{
+		m_parity_tap = m_att_cpu->space(AS_PROGRAM).install_readwrite_tap(RAM_BASE, RAM_BASE + RAM_SIZE - 1, "parity",
+				[this] (offs_t offset, u16 &data, u16 mem_mask) { parity_tap_r(offset, data, mem_mask); },
+				[this] (offs_t offset, u16 &data, u16 mem_mask) { parity_tap_w(offset, data, mem_mask); },
+				&m_parity_tap);
+		m_parity_tap_active = true;
+	}
+	else if (!needed && m_parity_tap_active)
+	{
+		m_parity_tap.remove();
+		m_parity_tap_active = false;
+	}
+}
+
+void ibm5085_state::parity_tap_w(offs_t offset, u16 &data, u16 mem_mask)
+{
+	for (unsigned b = 0; b < 2; b++)
+	{
+		if (!(mem_mask & (0xff00 >> (b * 8))))
+			continue;                               // this byte wasn't written
+
+		offs_t const index = (offset & ~1) + b - RAM_BASE;
+		bool const was_odd = BIT(m_parity_bits[index >> 3], index & 7);
+		if (was_odd != bool(m_parity_odd))
+		{
+			m_parity_bits[index >> 3] ^= 1 << (index & 7);
+			m_parity_odd_count += m_parity_odd ? 1 : -1;
+		}
+	}
+	parity_update_tap();                            // removes the tap once everything is even again
+}
+
+void ibm5085_state::parity_tap_r(offs_t offset, u16 &data, u16 mem_mask)
+{
+	if (machine().side_effects_disabled())
+		return;
+
+	for (unsigned b = 0; b < 2; b++)
+	{
+		if (!(mem_mask & (0xff00 >> (b * 8))))
+			continue;
+
+		offs_t const index = (offset & ~1) + b - RAM_BASE;
+		if (BIT(m_parity_bits[index >> 3], index & 7) != m_parity_odd)
+		{
+			LOG("parity error at %06x\n", (offset & ~1) + b);
+			// m_att_cpu->set_input_line(M68K_IRQ_7, ASSERT_LINE);   // PLACEHOLDER: see below
+			return;
+		}
 	}
 }
 
