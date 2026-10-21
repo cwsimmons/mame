@@ -25,6 +25,8 @@ static constexpr u8 ERR_J1      = 0x02;   // backplane error, J1 pin 3 (upper DR
 static constexpr u8 ERR_PARITY  = 0x04;   // lower DRAM parity (U112, ##363)
 static constexpr u8 ERR_SOFT    = 0x00;   // software set via FFF00A D0=0 (no status bit known)
 
+static constexpr u8 ERR_LOCAL    = 0x70;
+
 class ibm5085_state : public driver_device
 {
 public:
@@ -159,7 +161,7 @@ void ibm5085_state::att_iack_map(address_map &map)
 	map(0xfffff9, 0xfffff9).lr8(NAME([] () { return m68000_base_device::autovector(4); }));
 	map(0xfffffb, 0xfffffb).lr8(NAME([this] () -> u8 { return m_periph12_uart->inta_r(); }));
 	// level 7 (error NMI): U106 drives D1 with the error type, other bits PLACEHOLDER (assumed floating high)
-	map(0xffffff, 0xffffff).lr8(NAME([this] () -> u8 { return 0xfd | (m_err_type ? 0x02 : 0x00); }));
+	map(0xffffff, 0xffffff).lr8(NAME([this] () -> u8 { m_att_cpu->set_input_line(M68K_IRQ_7, CLEAR_LINE); return 0xfd | (m_err_type ? 0x02 : 0x00); }));
 }
 
 void ibm5085_state::parity_select_w(u8 data) {
@@ -226,12 +228,11 @@ void ibm5085_state::err_latch_w(u8 data)
 	{
 		// D0=1: clear and re-arm
 		m_err_latch = false;
-		m_att_cpu->set_input_line(M68K_IRQ_7, CLEAR_LINE);
 	}
 	else
 	{
 		// D0=0: software set. The capture registers see the address of this access.
-		error_event(ERR_SOFT, 0xfff00a, false);
+		error_event(ERR_SOFT | ERR_LOCAL, 0xfff00a, false);
 
 	}
 }
@@ -239,9 +240,9 @@ void ibm5085_state::err_latch_w(u8 data)
 u16 ibm5085_state::ext_bus_r(offs_t offset)
 {
 	if (offset == 0) {
-		return 0x71fc;
+		return (((u16) m_err_status) << 8) | ((m_err_addr >> 16) & 0x00ff);
 	} else {
-		return 0xfffe;
+		return m_err_addr & 0xffff;
 	}
 }
 
@@ -250,7 +251,7 @@ u16 ibm5085_state::berr_r(offs_t offset, u16 mem_mask)
 	if (!machine().side_effects_disabled())
 	{
 		offs_t const address = (offset << 1) | (ACCESSING_BITS_8_15 ? 0 : 1);
-		error_event(ERR_TIMEOUT, address, true);
+		error_event(ERR_TIMEOUT | ERR_LOCAL, address, false);
 		m_att_cpu->set_buserror_details(address, 1, m_att_cpu->get_fc());   // 1 = read
 		m_att_cpu->set_input_line(M68K_LINE_BUSERROR, ASSERT_LINE);
 	}
@@ -262,7 +263,7 @@ void ibm5085_state::berr_w(offs_t offset, u16 data, u16 mem_mask)
 	if (!machine().side_effects_disabled())
 	{
 		offs_t const address = (offset << 1) | (ACCESSING_BITS_8_15 ? 0 : 1);
-		error_event(ERR_TIMEOUT, address, true);
+		error_event(ERR_TIMEOUT | ERR_LOCAL, address, false);
 		m_att_cpu->set_buserror_details(address, 0, m_att_cpu->get_fc());   // 0 = write
 		m_att_cpu->set_input_line(M68K_LINE_BUSERROR, ASSERT_LINE);
 	}
@@ -320,7 +321,7 @@ void ibm5085_state::parity_tap_r(offs_t offset, u16 &data, u16 mem_mask)
 		if (BIT(m_parity_bits[index >> 3], index & 7) != m_parity_even)
 		{
 			LOG("parity error at %06x\n", (offset & ~1) + b);
-			error_event(ERR_PARITY, (offset & ~1) + b, true);
+			error_event(ERR_PARITY | ERR_LOCAL, (offset & ~1) + b, true);
 			return;
 		}
 	}
@@ -336,9 +337,12 @@ void ibm5085_state::error_event(u8 status_bits, offs_t address, bool gen_int)
 	m_err_latch = true;
 	m_err_addr = address;
 	m_err_status = status_bits;
-	m_err_type = (status_bits & ERR_PARITY) != 0;   // PLACEHOLDER: which errors set D1 is unknown
+	m_err_type = (status_bits & ERR_PARITY) == 0;   // PLACEHOLDER: which errors set D1 is unknown
 
-	m_att_cpu->set_input_line(M68K_IRQ_7, ASSERT_LINE);
+	if (gen_int)
+	{
+		m_att_cpu->set_input_line(M68K_IRQ_7, ASSERT_LINE);
+	}
 }
 
 TIMER_CALLBACK_MEMBER(ibm5085_state::boot_timeout)
