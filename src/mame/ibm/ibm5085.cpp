@@ -312,6 +312,9 @@ void ibm5085_state::parity_tap_r(offs_t offset, u16 &data, u16 mem_mask)
 	if (machine().side_effects_disabled())
 		return;
 
+	if (m_bootvect.entry().has_value() && offset < 0x08)
+		return;
+
 	for (unsigned b = 0; b < 2; b++)
 	{
 		if (!(mem_mask & (0xff00 >> (b * 8))))
