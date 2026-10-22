@@ -9,6 +9,8 @@
 #include "machine/clock.h"
 #include "bus/rs232/rs232.h"
 
+#include "ibm5085_si.h"
+
 #include "ibm5085.lh"
 
 #define VERBOSE (LOG_GENERAL)
@@ -38,7 +40,8 @@ public:
 		m_diag_leds(*this, "led%u", 0U),
 		m_mcheck_led(*this, "mcheck_led"),
 		m_periph12_uart(*this, "periph12_uart"),
-		m_test_switch(*this, "SWITCHES")
+		m_test_switch(*this, "SWITCHES"),
+		m_si_board(*this, "si_board")
 	{
     }
 
@@ -58,6 +61,7 @@ private:
 	output_finder<> m_mcheck_led;
 	required_device<i8274_device> m_periph12_uart;
 	required_ioport m_test_switch;
+	required_device<ibm5085_si_device> m_si_board;
 
 	emu_timer *m_boot_timer = nullptr;
 	TIMER_CALLBACK_MEMBER(boot_timeout);
@@ -138,6 +142,9 @@ void ibm5085_state::att_map(address_map &map)
 	map(0x000000, 0xffffff).rw(FUNC(ibm5085_state::berr_r), FUNC(ibm5085_state::berr_w));
 
 	map(0x000000, 0x7ffff).ram().share("ram_private");
+
+	map(0xfcfe00, 0xfcfe01).nopr().nopw();
+
 	map(0xfd0000, 0xfd7fff).rom().mirror(0x008000).region("att_rom", 0);
 	map(0xfe0000, 0xfe7fff).rom().mirror(0x008000).region("att_rom", 0);
 
@@ -364,6 +371,8 @@ void ibm5085_state::ibm50852a(machine_config &config)
 	M68010(config, m_att_cpu, 8'000'000);
 	m_att_cpu->set_addrmap(AS_PROGRAM, &ibm5085_state::att_map);
 	m_att_cpu->set_addrmap(m68000_base_device::AS_CPU_SPACE, &ibm5085_state::att_iack_map);
+
+	IBM5085_SI(config, m_si_board);
 
 	I8274(config, m_periph12_uart, 4'000'000);
 	m_periph12_uart->out_int_callback().set_inputline(m_att_cpu, M68K_IRQ_5);
