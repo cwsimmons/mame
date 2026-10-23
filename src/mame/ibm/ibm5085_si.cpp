@@ -27,6 +27,8 @@ void ibm5085_si_device::cpu_map(address_map &map)
 {
 	map(0x000000, 0x003fff).ram();
 	map(0xff0000, 0xff3fff).rom().region("rom", 0);
+    map(0xff8000, 0xffbfff).ram().mirror(0x004000);
+    // map(0xff8800, 0xff8fff).ram().mirror(0x004000);
 
     map(0xfcf000, 0xfcf001).w(FUNC(ibm5085_si_device::doorbell_w)).umask16(0x00ff);
 
