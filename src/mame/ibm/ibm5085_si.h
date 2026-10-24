@@ -23,6 +23,9 @@ private:
 
 	required_device<m68010_device> m_cpu;
 	required_region_ptr<u16> m_rom;
+	required_shared_ptr<u16> m_sram;
+	memory_bank_creator m_page0_bank;  // 000000-000FFF -> SRAM offset 0x3000
+	memory_bank_creator m_ff8_bank;    // FF8000-FF8FFF -> SRAM offset 0x0000
     memory_view m_bootvect;
 
 	emu_timer *m_boot_timer = nullptr;

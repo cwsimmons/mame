@@ -13,6 +13,9 @@ ibm5085_si_device::ibm5085_si_device(machine_config const &mconfig, char const *
 	: device_t(mconfig, IBM5085_SI, tag, owner, clock)
 	, m_cpu(*this, "cpu")       // tags are relative to this device: full path is ":<device tag>:cpu"
 	, m_rom(*this, "rom")
+	, m_sram(*this, "sram")
+	, m_page0_bank(*this, "page0_bank")
+	, m_ff8_bank(*this, "ff8_bank")
     , m_bootvect(*this, "bootvect")
 {
 }
@@ -25,12 +28,13 @@ void ibm5085_si_device::device_add_mconfig(machine_config &config)
 
 void ibm5085_si_device::cpu_map(address_map &map)
 {
-	map(0x000000, 0x003fff).ram();
-	map(0xff0000, 0xff3fff).rom().region("rom", 0);
-    map(0xff8000, 0xffbfff).ram().mirror(0x004000);
-    // map(0xff8800, 0xff8fff).ram().mirror(0x004000);
-
     map(0xfcf000, 0xfcf001).w(FUNC(ibm5085_si_device::doorbell_w)).umask16(0x00ff);
+
+	map(0xff0000, 0xff3fff).rom().region("rom", 0);
+
+	map(0xffc000, 0xffffff).ram().share(m_sram);
+	map(0xff8000, 0xff8fff).bankrw(m_ff8_bank);
+	map(0x000000, 0x000fff).bankrw(m_page0_bank);
 
     map(0x000000, 0x000007).view(m_bootvect);
 	m_bootvect[0](0x000000, 0x000007).rom().region("rom", 0);
@@ -38,6 +42,9 @@ void ibm5085_si_device::cpu_map(address_map &map)
 
 void ibm5085_si_device::device_start()
 {
+	m_page0_bank->set_base(&m_sram[0x3000 / 2]);
+	m_ff8_bank->set_base(&m_sram[0x0000 / 2]);
+
     m_boot_timer = timer_alloc(FUNC(ibm5085_si_device::boot_timeout), this);
 
     // HACK: MAME's 68010 doesn't implement instruction continuation when returning
