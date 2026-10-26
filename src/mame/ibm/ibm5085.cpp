@@ -143,7 +143,7 @@ void ibm5085_state::att_map(address_map &map)
 
 	map(0x000000, 0x7ffff).ram().share("ram_private");
 
-	map(0xfcfe00, 0xfcfe01).nopr().nopw();
+	map(0xfcf000, 0xfcffff).m(m_si_board, FUNC(ibm5085_si_device::host_map));
 
 	map(0xfd0000, 0xfd7fff).rom().mirror(0x008000).region("att_rom", 0);
 	map(0xfe0000, 0xfe7fff).rom().mirror(0x008000).region("att_rom", 0);
@@ -167,6 +167,7 @@ void ibm5085_state::att_iack_map(address_map &map)
 	map(0xfffff7, 0xfffff7).lr8(NAME([] () { return m68000_base_device::autovector(3); }));
 	map(0xfffff9, 0xfffff9).lr8(NAME([] () { return m68000_base_device::autovector(4); }));
 	map(0xfffffb, 0xfffffb).lr8(NAME([this] () -> u8 { return m_periph12_uart->inta_r(); }));
+	map(0xfffffd, 0xfffffd).lr8(NAME([] () -> u8 { return 0x62; }));	// Floppy Drive
 	// level 7 (error NMI): U106 drives D1 with the error type, other bits PLACEHOLDER (assumed floating high)
 	map(0xffffff, 0xffffff).lr8(NAME([this] () -> u8 { m_att_cpu->set_input_line(M68K_IRQ_7, CLEAR_LINE); return 0xfd | (m_err_type ? 0x02 : 0x00); }));
 }
@@ -373,6 +374,7 @@ void ibm5085_state::ibm50852a(machine_config &config)
 	m_att_cpu->set_addrmap(m68000_base_device::AS_CPU_SPACE, &ibm5085_state::att_iack_map);
 
 	IBM5085_SI(config, m_si_board);
+	m_si_board->int_callback().set_inputline(m_att_cpu, M68K_IRQ_6);
 
 	I8274(config, m_periph12_uart, 4'000'000);
 	m_periph12_uart->out_int_callback().set_inputline(m_att_cpu, M68K_IRQ_5);

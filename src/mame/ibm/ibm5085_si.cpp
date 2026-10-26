@@ -17,13 +17,25 @@ ibm5085_si_device::ibm5085_si_device(machine_config const &mconfig, char const *
 	, m_page0_bank(*this, "page0_bank")
 	, m_ff8_bank(*this, "ff8_bank")
     , m_bootvect(*this, "bootvect")
+	, m_fdc(*this, "fdc")
+	, m_floppy(*this, "fdc:0")
+	, m_int_cb(*this)
 {
+}
+
+static void si_floppies(device_slot_interface &device)
+{	
+	device.option_add("35dd", FLOPPY_35_DD);
 }
 
 void ibm5085_si_device::device_add_mconfig(machine_config &config)
 {
 	M68010(config, m_cpu, 8'000'000);   // PLACEHOLDER clock
 	m_cpu->set_addrmap(AS_PROGRAM, &ibm5085_si_device::cpu_map);
+
+	UPD765A(config, m_fdc, 8'000'000, true, true);
+	m_fdc->intrq_wr_callback().set(FUNC(ibm5085_si_device::fdc_int_w));
+	FLOPPY_CONNECTOR(config, m_floppy, si_floppies, "35dd", floppy_image_device::default_pc_floppy_formats);
 }
 
 void ibm5085_si_device::cpu_map(address_map &map)
@@ -38,6 +50,14 @@ void ibm5085_si_device::cpu_map(address_map &map)
 
     map(0x000000, 0x000007).view(m_bootvect);
 	m_bootvect[0](0x000000, 0x000007).rom().region("rom", 0);
+}
+
+void ibm5085_si_device::host_map(address_map &map)
+{
+	map(0x000, 0x001).w(FUNC(ibm5085_si_device::doorbell_w)).umask16(0x00ff);
+	map(0xe00, 0xe00).rw(m_fdc, FUNC(upd765a_device::fifo_r), FUNC(upd765a_device::fifo_w));
+	map(0xe01, 0xe01).r(m_fdc, FUNC(upd765a_device::msr_r));
+	map(0xe06, 0xe06).w(FUNC(ibm5085_si_device::motor_w));
 }
 
 void ibm5085_si_device::device_start()
@@ -69,13 +89,24 @@ void ibm5085_si_device::doorbell_w(u8 data)
 {
     if (!BIT(data, 0))
     {
-        LOG("Set IRQ4");
+        LOG("Set IRQ4\n");
         m_cpu->set_input_line(M68K_IRQ_4, ASSERT_LINE);
     } else
     {
-        LOG("Clear IRQ4");
+        LOG("Clear IRQ4\n");
         m_cpu->set_input_line(M68K_IRQ_4, CLEAR_LINE);
     }
+}
+
+void ibm5085_si_device::motor_w(u8 data)
+{
+	if (floppy_image_device *f = m_floppy->get_device())
+		f->mon_w(!BIT(data, 0));
+}
+
+void ibm5085_si_device::fdc_int_w(int state)
+{
+	m_int_cb(state);
 }
 
 TIMER_CALLBACK_MEMBER(ibm5085_si_device::boot_timeout)
