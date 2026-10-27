@@ -151,9 +151,15 @@ enum is_mask : u16
 };
 
 DEFINE_DEVICE_TYPE(AM9516, am9516_device, "am9516", "Am9516 Universal DMA Controller")
+DEFINE_DEVICE_TYPE(Z8016, z8016_device, "z8016", "Zilog Z8016 DMA Transfer Controller")
 
 am9516_device::am9516_device(machine_config const &mconfig, char const *tag, device_t *owner, u32 clock)
-	: device_t(mconfig, AM9516, tag, owner, clock)
+	: am9516_device(mconfig, AM9516, tag, owner, clock)
+{
+}
+
+am9516_device::am9516_device(machine_config const &mconfig, device_type type, char const *tag, device_t *owner, u32 clock)
+	: device_t(mconfig, type, tag, owner, clock)
 	, device_memory_interface(mconfig, *this)
 	, m_space_config{
 		{ "system_io",  ENDIANNESS_BIG, 16, 24 },
@@ -339,15 +345,15 @@ void am9516_device::data_w(u16 data)
 	case 0x0c: m_channel[1].baal = data; break;
 	case 0x0e: m_channel[0].baal = data; break;
 		// address b upper
-	case 0x10: m_channel[1].cabu = data & ARU_WM; break;
-	case 0x12: m_channel[0].cabu = data & ARU_WM; break;
-	case 0x14: m_channel[1].babu = data & ARU_WM; break;
-	case 0x16: m_channel[0].babu = data & ARU_WM; break;
+	case 0x10: m_channel[1].cabu = data & aru_write_mask(); break;
+	case 0x12: m_channel[0].cabu = data & aru_write_mask(); break;
+	case 0x14: m_channel[1].babu = data & aru_write_mask(); break;
+	case 0x16: m_channel[0].babu = data & aru_write_mask(); break;
 		// address a upper
-	case 0x18: m_channel[1].caau = data & ARU_WM; break;
-	case 0x1a: m_channel[0].caau = data & ARU_WM; break;
-	case 0x1c: m_channel[1].baau = data & ARU_WM; break;
-	case 0x1e: m_channel[0].baau = data & ARU_WM; break;
+	case 0x18: m_channel[1].caau = data & aru_write_mask(); break;
+	case 0x1a: m_channel[0].caau = data & aru_write_mask(); break;
+	case 0x1c: m_channel[1].baau = data & aru_write_mask(); break;
+	case 0x1e: m_channel[0].baau = data & aru_write_mask(); break;
 		// chain address
 	case 0x20: m_channel[1].cal = data; break;
 	case 0x22: m_channel[0].cal = data; break;
@@ -367,7 +373,7 @@ void am9516_device::data_w(u16 data)
 	case 0x38:
 		LOGMASKED(LOG_REGW, "master mode 0x%04x (%s)\n",
 			data, machine().describe_context());
-		m_mode = data & 0xf;
+		m_mode = data & mode_mask();
 		return;
 		// pattern
 	case 0x48: m_channel[1].pattern = data; break;
@@ -692,7 +698,7 @@ u16 am9516_device::acknowledge()
 	{
 		if ((ch.status & S_CIE) && (ch.status & S_IP))
 		{
-			u16 const data = (m_mode & MM3) ? 0 : ch.is;
+			u16 const data = no_vector() ? 0 : ch.is;
 
 			ch.interrupt(false);
 			interrupt();
@@ -704,10 +710,23 @@ u16 am9516_device::acknowledge()
 	fatalerror("%s: interrupt acknowledge with no pending interrupts\n", tag());
 }
 
-#undef LOG_OUTPUT_FUNC
-#define LOG_OUTPUT_FUNC udc.logerror
+u16 am9516_device::aru_write_mask() const
+{
+	return ARU_WM;
+}
 
-u32 am9516_device::channel::address(u16 &aru, u16 &arl, int delta)
+unsigned am9516_device::reference_space(u16 aru) const
+{
+	return (aru & ARU_AR) >> 6;
+}
+
+bool am9516_device::no_vector() const
+{
+	return m_mode & MM3;
+}
+
+// return the current address, then step it by delta according to the tag
+u32 am9516_device::address(u16 &aru, u16 &arl, int delta)
 {
 	u32 const current = u32(aru & ARU_UA) << 8 | arl;
 
@@ -728,6 +747,9 @@ u32 am9516_device::channel::address(u16 &aru, u16 &arl, int delta)
 	return current;
 }
 
+#undef LOG_OUTPUT_FUNC
+#define LOG_OUTPUT_FUNC udc.logerror
+
 u8 am9516_device::channel::read_byte(unsigned &cycles, bool flip)
 {
 	u16 &cau = flip ? cabu : caau;
@@ -735,7 +757,7 @@ u8 am9516_device::channel::read_byte(unsigned &cycles, bool flip)
 
 	cycles += wait_states[BIT(cau, 1, 2)];
 
-	return udc.space((cau & ARU_AR) >> 6).read_byte(address(cau, cal, 1));
+	return udc.space(udc.reference_space(cau)).read_byte(udc.address(cau, cal, 1));
 }
 
 void am9516_device::channel::write_byte(u8 data, unsigned &cycles, bool flip)
@@ -745,7 +767,7 @@ void am9516_device::channel::write_byte(u8 data, unsigned &cycles, bool flip)
 
 	cycles += wait_states[BIT(cau, 1, 2)];
 
-	udc.space((cau & ARU_AR) >> 6).write_byte(address(cau, cal, 1), data);
+	udc.space(udc.reference_space(cau)).write_byte(udc.address(cau, cal, 1), data);
 }
 
 u16 am9516_device::channel::read_word(unsigned &cycles, bool flip)
@@ -755,7 +777,7 @@ u16 am9516_device::channel::read_word(unsigned &cycles, bool flip)
 
 	cycles += wait_states[BIT(cau, 1, 2)];
 
-	return udc.space((cau & ARU_AR) >> 6).read_word(address(cau, cal, 2));
+	return udc.space(udc.reference_space(cau)).read_word(udc.address(cau, cal, 2));
 }
 
 void am9516_device::channel::write_word(u16 data, unsigned &cycles, bool flip)
@@ -765,7 +787,7 @@ void am9516_device::channel::write_word(u16 data, unsigned &cycles, bool flip)
 
 	cycles += wait_states[BIT(cau, 1, 2)];
 
-	udc.space((cau & ARU_AR) >> 6).write_word(address(cau, cal, 2), data);
+	udc.space(udc.reference_space(cau)).write_word(udc.address(cau, cal, 2), data);
 }
 
 void am9516_device::channel::interrupt(bool assert)
@@ -835,7 +857,7 @@ void am9516_device::channel::chain()
 	// TODO: abort on EOP
 
 	// fetch reload word
-	u32 chain_address = address(cau, cal);
+	u32 chain_address = udc.address(cau, cal, 0);
 	u16 reload = s.read_word(chain_address) & CC_WM;
 	LOGMASKED(LOG_REGW, "chain address 0x%06x reload word 0x%04x\n", chain_address, reload);
 	chain_address += 2;
@@ -843,7 +865,7 @@ void am9516_device::channel::chain()
 	// current address a
 	if (reload & CC_CAA)
 	{
-		caau = s.read_word(chain_address + 0) & ARU_WM;
+		caau = s.read_word(chain_address + 0) & udc.aru_write_mask();
 		caal = s.read_word(chain_address + 2);
 
 		LOGMASKED(LOG_REGW, "current address a 0x%04x 0x%04x\n", caau, caal);
@@ -855,7 +877,7 @@ void am9516_device::channel::chain()
 	// current address b
 	if (reload & CC_CAB)
 	{
-		cabu = s.read_word(chain_address + 0) & ARU_WM;
+		cabu = s.read_word(chain_address + 0) & udc.aru_write_mask();
 		cabl = s.read_word(chain_address + 2);
 
 		LOGMASKED(LOG_REGW, "current address b 0x%04x 0x%04x\n", cabu, cabl);
@@ -877,7 +899,7 @@ void am9516_device::channel::chain()
 	// base address a
 	if (reload & CC_BAA)
 	{
-		baau = s.read_word(chain_address + 0) & ARU_WM;
+		baau = s.read_word(chain_address + 0) & udc.aru_write_mask();
 		baal = s.read_word(chain_address + 2);
 
 		LOGMASKED(LOG_REGW, "base address a 0x%04x 0x%04x\n", baau, baal);
@@ -888,7 +910,7 @@ void am9516_device::channel::chain()
 	// base address b
 	if (reload & CC_BAB)
 	{
-		babu = s.read_word(chain_address + 0) & ARU_WM;
+		babu = s.read_word(chain_address + 0) & udc.aru_write_mask();
 		babl = s.read_word(chain_address + 2);
 
 		LOGMASKED(LOG_REGW, "base address b 0x%04x 0x%04x\n", babu, babl);
@@ -1011,17 +1033,120 @@ void am9516_device::channel::log_addr(unsigned mask, const char *const name, u16
 {
 	if (VERBOSE & mask)
 	{
-		static const char *const ar[] =
-		{
-			"system i/o", "system mem", "normal i/o", "normal mem"
-		};
 		static const char *const ac[] =
 		{
 			"inc", "dec", "hld", "hld"
 		};
 
 		LOGMASKED(mask, "%s %s 0x%06x %s wait:%d\n",
-			name, ar[BIT(aru, 6, 2)], u32(aru & ARU_UA) << 8 | arl,
+			name, udc.space(udc.reference_space(aru)).name(), u32(aru & ARU_UA) << 8 | arl,
 			ac[BIT(aru, 3, 2)], wait_states[BIT(aru, 1, 2)]);
 	}
+}
+
+/*
+ * Z8016 DMA Transfer Controller (DTC)
+ *
+ * Register-compatible with the Am9516, but the address register tag field
+ * and the master mode register are laid out for the Z8000 bus.
+ *
+ * Sources:
+ *  - Z8016 Z-DTC Direct Memory Access Transfer Controller product specification, Zilog
+ *
+ * TODO:
+ *  - interrupt daisy chain (IEI/IEO, disable lower chain)
+ *  - interrupt acknowledge type field
+ *  - separate data/stack/program memory spaces
+ */
+
+#undef LOG_OUTPUT_FUNC
+#define LOG_OUTPUT_FUNC logerror
+
+enum z8016_master_mode_mask : u8
+{
+	Z_CE  = 0x01, // chip enable
+	Z_LPA = 0x02, // logical (1) or physical (0) address space
+	Z_CIE = 0x04, // cpu interleave enable
+	Z_WLE = 0x08, // wait line enable
+	Z_DLC = 0x10, // disable lower chain
+	Z_NVI = 0x20, // no vector on interrupt
+	Z_IAF = 0xc0, // interrupt acknowledge field
+};
+
+enum z8016_aru_mask : u16
+{
+	ZARU_WC  = 0x0006, // wait control
+	ZARU_AC  = 0x0018, // address control
+	ZARU_ST  = 0x00e0, // status (address reference)
+	ZARU_SEG = 0xff00, // segment number (bit 15 physical only)
+
+	ZARU_WM  = 0xfffe,
+};
+
+enum z8016_aru_st_mask : u16
+{
+	ST_SYS_DATA    = 0x0000, // system data memory
+	ST_SYS_STACK   = 0x0020, // system stack memory
+	ST_SYS_PROGRAM = 0x0040, // system program memory
+	ST_IO          = 0x0060, // i/o
+	ST_NOR_DATA    = 0x0080, // normal data memory
+	ST_NOR_STACK   = 0x00a0, // normal stack memory
+	ST_NOR_PROGRAM = 0x00c0, // normal program memory
+	ST_SPECIAL_IO  = 0x00e0, // special i/o
+};
+
+z8016_device::z8016_device(machine_config const &mconfig, char const *tag, device_t *owner, u32 clock)
+	: am9516_device(mconfig, Z8016, tag, owner, clock)
+{
+	m_space_config[IO]         = address_space_config("io",         ENDIANNESS_BIG, 16, 24);
+	m_space_config[SYSTEM_MEM] = address_space_config("system_mem", ENDIANNESS_BIG, 16, 24);
+	m_space_config[SPECIAL_IO] = address_space_config("special_io", ENDIANNESS_BIG, 16, 24);
+	m_space_config[NORMAL_MEM] = address_space_config("normal_mem", ENDIANNESS_BIG, 16, 24);
+}
+
+u16 z8016_device::aru_write_mask() const
+{
+	return ZARU_WM;
+}
+
+unsigned z8016_device::reference_space(u16 aru) const
+{
+	switch (aru & ZARU_ST)
+	{
+	case ST_IO:         return IO;
+	case ST_SPECIAL_IO: return SPECIAL_IO;
+	default:            return BIT(aru, 7) ? NORMAL_MEM : SYSTEM_MEM;
+	}
+}
+
+bool z8016_device::no_vector() const
+{
+	return m_mode & Z_NVI;
+}
+
+// The Z8016 always generates byte addresses, including for i/o. In physical
+// mode the segment and offset form one 24-bit address; in logical mode the
+// 7-bit segment is output separately and only the offset is stepped.
+u32 z8016_device::address(u16 &aru, u16 &arl, int delta)
+{
+	bool const logical = m_mode & Z_LPA;
+	u32 const current = u32(aru & (logical ? 0x7f00 : ZARU_SEG)) << 8 | arl;
+
+	if (!delta || (aru & AC_HLD))
+		return current;
+
+	if (aru & AC_DEC)
+		delta = -delta;
+
+	if (logical)
+		arl += delta;
+	else
+	{
+		u32 const adjusted = current + delta;
+
+		aru = ((adjusted >> 8) & ZARU_SEG) | (aru & ~ZARU_SEG);
+		arl = u16(adjusted);
+	}
+
+	return current;
 }

@@ -43,6 +43,8 @@ public:
 	u16 acknowledge();
 
 protected:
+	am9516_device(machine_config const &mconfig, device_type type, char const *tag, device_t *owner, u32 clock);
+
 	// device_t overrides
 	virtual void device_start() override ATTR_COLD;
 	virtual void device_reset() override ATTR_COLD;
@@ -50,13 +52,25 @@ protected:
 	// device_memory_interface overrides
 	virtual space_config_vector memory_space_config() const override;
 
+	// address register tag field interpretation
+	virtual u16 aru_write_mask() const;
+	virtual unsigned reference_space(u16 aru) const;
+	virtual u32 address(u16 &aru, u16 &arl, int delta);
+
+	// master mode register interpretation
+	virtual u8 mode_mask() const { return 0x0f; }
+	virtual bool no_vector() const;
+
+	address_space_config m_space_config[4];
+
+	// chip-level registers
+	u8 m_mode;
+
 private:
 	void command(u8 data);
 	template <unsigned Channel> void operate(s32 param);
 	void complete(unsigned const c, u16 status);
 	void interrupt();
-
-	address_space_config m_space_config[4];
 
 	devcb_write_line m_int;
 	devcb_write_line m_eop;
@@ -67,7 +81,6 @@ private:
 	bool m_eop_in_state;
 
 	// chip-level registers
-	u8 m_mode;
 	u8 m_pointer;
 	u16 m_temporary;
 
@@ -81,8 +94,6 @@ private:
 			, flyby_word_r(parent, 0)
 			, flyby_word_w(parent)
 		{}
-
-		u32 address(u16 &aru, u16 &arl, int delta = 0);
 
 		u8 read_byte(unsigned &cycles, bool flip = false);
 		void write_byte(u8 data, unsigned &cycles, bool flip = false);
@@ -130,6 +141,30 @@ private:
 	m_channel[2];
 };
 
+class z8016_device : public am9516_device
+{
+public:
+	// Z8016 tag field status codes 011 (I/O) and 111 (special I/O) are
+	// routed to the Am9516's I/O spaces; the data, stack and program memory
+	// codes are merged into system and normal memory.
+	enum : unsigned
+	{
+		IO         = SYSTEM_IO,
+		SPECIAL_IO = NORMAL_IO,
+	};
+
+	z8016_device(machine_config const &mconfig, char const *tag, device_t *owner, u32 clock);
+
+protected:
+	virtual u16 aru_write_mask() const override;
+	virtual unsigned reference_space(u16 aru) const override;
+	virtual u32 address(u16 &aru, u16 &arl, int delta) override;
+
+	virtual u8 mode_mask() const override { return 0xff; }
+	virtual bool no_vector() const override;
+};
+
 DECLARE_DEVICE_TYPE(AM9516, am9516_device)
+DECLARE_DEVICE_TYPE(Z8016, z8016_device)
 
 #endif // MAME_MACHINE_AM9516_H

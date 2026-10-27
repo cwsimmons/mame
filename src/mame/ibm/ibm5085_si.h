@@ -7,6 +7,7 @@
 #include "cpu/m68000/m68010.h"
 #include "machine/upd765.h"
 #include "imagedev/floppy.h"
+#include "machine/am9516.h"
 
 class ibm5085_si_device : public device_t
 {
@@ -14,6 +15,9 @@ public:
 	ibm5085_si_device(machine_config const &mconfig, char const *tag, device_t *owner, u32 clock = 0);
 	void host_map(address_map &map) ATTR_COLD;
 	auto int_callback() { return m_int_cb.bind(); }
+    
+    auto bus_read()  { return m_bus_r.bind(); }
+	auto bus_write() { return m_bus_w.bind(); }
 
 protected:
 	// device_t implementation
@@ -34,6 +38,9 @@ private:
 	required_device<upd765a_device> m_fdc;
 	required_device<floppy_connector> m_floppy;
 	devcb_write_line m_int_cb;
+    required_device<z8016_device> m_udc;
+    devcb_read16  m_bus_r;
+	devcb_write16 m_bus_w;
 
 	emu_timer *m_boot_timer = nullptr;
 	TIMER_CALLBACK_MEMBER(boot_timeout);
@@ -41,6 +48,7 @@ private:
     void doorbell_w(u8 data);
 	void motor_w(u8 data);
 	void fdc_int_w(int state);
+    void dma_map(address_map &map) ATTR_COLD;
 };
 
 DECLARE_DEVICE_TYPE(IBM5085_SI, ibm5085_si_device)

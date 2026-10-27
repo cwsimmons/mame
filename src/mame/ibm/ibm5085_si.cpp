@@ -18,8 +18,11 @@ ibm5085_si_device::ibm5085_si_device(machine_config const &mconfig, char const *
 	, m_ff8_bank(*this, "ff8_bank")
     , m_bootvect(*this, "bootvect")
 	, m_fdc(*this, "fdc")
-	, m_floppy(*this, "fdc:0")
+	, m_floppy(*this, "fdc:2")
 	, m_int_cb(*this)
+    , m_udc(*this, "udc")
+    , m_bus_r(*this, 0xffff)
+	, m_bus_w(*this)
 {
 }
 
@@ -36,6 +39,15 @@ void ibm5085_si_device::device_add_mconfig(machine_config &config)
 	UPD765A(config, m_fdc, 8'000'000, true, true);
 	m_fdc->intrq_wr_callback().set(FUNC(ibm5085_si_device::fdc_int_w));
 	FLOPPY_CONNECTOR(config, m_floppy, si_floppies, "35dd", floppy_image_device::default_pc_floppy_formats);
+
+    Z8016(config, m_udc, 4'000'000);
+    for (unsigned s = z8016_device::IO; s <= z8016_device::NORMAL_MEM; s++)
+        m_udc->set_addrmap(s, &ibm5085_si_device::dma_map);
+
+    m_fdc->drq_wr_callback().set(m_udc, FUNC(z8016_device::dreq_w<0>)).invert();
+    m_udc->flyby_byte_r<0>().set(m_fdc, FUNC(upd765a_device::dma_r));
+    m_udc->flyby_byte_w<0>().set(m_fdc, FUNC(upd765a_device::dma_w));
+    m_udc->out_eop().set(m_fdc, FUNC(upd765a_device::tc_line_w)).invert();
 }
 
 void ibm5085_si_device::cpu_map(address_map &map)
@@ -57,7 +69,21 @@ void ibm5085_si_device::host_map(address_map &map)
 	map(0x000, 0x001).w(FUNC(ibm5085_si_device::doorbell_w)).umask16(0x00ff);
 	map(0xe00, 0xe00).rw(m_fdc, FUNC(upd765a_device::fifo_r), FUNC(upd765a_device::fifo_w));
 	map(0xe01, 0xe01).r(m_fdc, FUNC(upd765a_device::msr_r));
+    map(0xe02, 0xe02).lw8(NAME([this] (u8 data) { m_udc->addr_w(data); }));
+    map(0xe04, 0xe05).rw(m_udc, FUNC(z8016_device::data_r), FUNC(z8016_device::data_w));
 	map(0xe06, 0xe06).w(FUNC(ibm5085_si_device::motor_w));
+}
+
+void ibm5085_si_device::dma_map(address_map &map)
+{
+    map(0x000000, 0xffffff).lrw16(
+        NAME([this] (offs_t offset, u16 mem_mask) {
+             return m_bus_r(offset, mem_mask);
+        }),
+        NAME([this] (offs_t offset, u16 data, u16 mem_mask) {
+            m_bus_w(offset, data, mem_mask);
+        })
+    );
 }
 
 void ibm5085_si_device::device_start()
