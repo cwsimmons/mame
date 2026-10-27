@@ -69,15 +69,16 @@ private:
 
 	void att_map(address_map &map) ATTR_COLD;
 	void att_iack_map(address_map &map) ATTR_COLD;
+	void io_map(address_map &map) ATTR_COLD;
 
 	// 0xFFF000 Block
-	void parity_select_w(u8 data);
-	void diag_led_w(u8 data);
+	void parity_select_w(u16 data);
+	void diag_led_w(u16 data);
 	u8 testsw_r();
-	void periph_baud_w(u8 data);
-	void rs232_baud_w(u8 data);
+	void periph_baud_w(u16 data);
+	void rs232_baud_w(u16 data);
 	u8 err_latch_r();
-	void err_latch_w(u8 data);
+	void err_latch_w(u16 data);
 	u16 ext_bus_r(offs_t offset);
 
 	u16 berr_r(offs_t offset, u16 mem_mask);
@@ -157,18 +158,25 @@ void ibm5085_state::att_map(address_map &map)
 	map(0xfd0000, 0xfd7fff).rom().mirror(0x008000).region("att_rom", 0);
 	map(0xfe0000, 0xfe7fff).rom().mirror(0x008000).region("att_rom", 0);
 
-	map(0xfff000, 0xfff001).w(FUNC(ibm5085_state::parity_select_w)).umask16(0x00ff).nopr();
-	map(0xfff002, 0xfff003).w(FUNC(ibm5085_state::diag_led_w)).umask16(0xff00).nopr();
-	map(0xfff004, 0xfff005).r(FUNC(ibm5085_state::testsw_r)).umask16(0x00ff).nopw();
-	map(0xfff006, 0xfff007).w(FUNC(ibm5085_state::periph_baud_w)).umask16(0x00ff).nopr();
-	map(0xfff008, 0xfff009).w(FUNC(ibm5085_state::rs232_baud_w)).umask16(0x00ff).nopr();
-	map(0xfff00a, 0xfff00b).r(FUNC(ibm5085_state::err_latch_r)).w(FUNC(ibm5085_state::err_latch_w)).umask16(0x00ff);
-	map(0xfff00c, 0xfff00f).r(FUNC(ibm5085_state::ext_bus_r)).nopw();
-
-	map(0xff0040, 0xff0047).rw(m_periph12_uart, FUNC(i8274_device::ba_cd_r), FUNC(i8274_device::ba_cd_w)).umask16(0x00ff);
+	map(0xff0000, 0xff00ff).mirror(0x00ff00).m(FUNC(ibm5085_state::io_map));
 
 	map(0x000000, 0x000007).view(m_bootvect);
 	m_bootvect[0](0x000000, 0x000007).rom().region("att_rom", 0);
+}
+
+void ibm5085_state::io_map(address_map &map)
+{
+	map(0x00, 0x01).mirror(0xb0).w(FUNC(ibm5085_state::parity_select_w)).nopr();
+	map(0x02, 0x03).mirror(0xb0).w(FUNC(ibm5085_state::diag_led_w)).nopr();
+	map(0x04, 0x05).mirror(0xb0).r(FUNC(ibm5085_state::testsw_r)).umask16(0x00ff).nopw();
+	map(0x06, 0x07).mirror(0xb0).w(FUNC(ibm5085_state::periph_baud_w)).nopr();
+	map(0x08, 0x09).mirror(0xb0).w(FUNC(ibm5085_state::rs232_baud_w)).nopr();
+	map(0x0a, 0x0b).mirror(0xb0).r(FUNC(ibm5085_state::err_latch_r)).umask16(0x00ff);
+	map(0x0a, 0x0b).mirror(0xb0).w(FUNC(ibm5085_state::err_latch_w));
+	map(0x0c, 0x0f).mirror(0xb0).r(FUNC(ibm5085_state::ext_bus_r)).nopw();
+
+	map(0x40, 0x47).mirror(0x18).rw(m_periph12_uart, FUNC(i8274_device::ba_cd_r), FUNC(i8274_device::ba_cd_w)).umask16(0x00ff);
+
 }
 
 void ibm5085_state::att_iack_map(address_map &map)
@@ -181,17 +189,19 @@ void ibm5085_state::att_iack_map(address_map &map)
 	map(0xffffff, 0xffffff).lr8(NAME([this] () -> u8 { m_att_cpu->set_input_line(M68K_IRQ_7, CLEAR_LINE); return 0xfd | (m_err_type ? 0x02 : 0x00); }));
 }
 
-void ibm5085_state::parity_select_w(u8 data) {
+void ibm5085_state::parity_select_w(u16 data) {
 	m_parity_even = !BIT(data, 0);
 	LOG("m_parity_even = %d\n", m_parity_even);
 	parity_update_tap();
 }
 
-void ibm5085_state::diag_led_w(u8 data)
+void ibm5085_state::diag_led_w(u16 data)
 {
 	static u8 const led_pattern[16] = {
 		0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07,
 		0x7f, 0x6f, 0x77, 0x7c, 0x39, 0x5e, 0x79, 0x71 };   // 0x71 = "F"
+
+	data = data >> 8;
 
 	if (!BIT(data, 4)) {		// Write to upper nibble
 		m_diag_leds[1] = led_pattern[data & 0x0f];
@@ -221,12 +231,12 @@ u8 ibm5085_state::testsw_r()
 	return data;
 }
 
-void ibm5085_state::periph_baud_w(u8 data)
+void ibm5085_state::periph_baud_w(u16 data)
 {
 
 }
 
-void ibm5085_state::rs232_baud_w(u8 data)
+void ibm5085_state::rs232_baud_w(u16 data)
 {
 
 }
@@ -238,7 +248,7 @@ u8 ibm5085_state::err_latch_r()
 	return 0xff;
 }
 
-void ibm5085_state::err_latch_w(u8 data)
+void ibm5085_state::err_latch_w(u16 data)
 {
 	if (BIT(data, 0))
 	{
