@@ -8,6 +8,7 @@
 #include "machine/6840ptm.h"
 #include "machine/clock.h"
 #include "bus/rs232/rs232.h"
+#include "ibm5085_pca.h"
 
 #include "ibm5085_si.h"
 
@@ -430,6 +431,12 @@ static INPUT_PORTS_START(ibm5085)
 	PORT_BIT( 0x7f, IP_ACTIVE_HIGH, IPT_UNUSED )
 INPUT_PORTS_END
 
+static void periph_devices(device_slot_interface &device)
+{
+	default_rs232_devices(device);           // so you can still pick null_modem etc.
+	device.option_add("pca", IBM5085_PCA);
+}
+
 void ibm5085_state::ibm50852a(machine_config &config)
 {
 	M68010(config, m_att_cpu, 8'000'000);
@@ -449,7 +456,7 @@ void ibm5085_state::ibm50852a(machine_config &config)
 	baud.signal_handler().append(m_periph12_uart, FUNC(i8274_device::txca_w));
 
 	// U90 Port A
-	rs232_port_device &port_a(RS232_PORT(config, "port_a", default_rs232_devices, nullptr));
+	rs232_port_device &port_a(RS232_PORT(config, "port_a", periph_devices, "pca"));
 	port_a.rxd_handler().set(m_periph12_uart, FUNC(i8274_device::rxa_w));
 	port_a.cts_handler().set(m_periph12_uart, FUNC(i8274_device::ctsa_w));
 	port_a.dcd_handler().set(m_periph12_uart, FUNC(i8274_device::dcda_w));
