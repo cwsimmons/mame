@@ -7,6 +7,7 @@
 #include "machine/z80sio.h"
 #include "machine/6840ptm.h"
 #include "machine/clock.h"
+#include "machine/input_merger.h"
 #include "bus/rs232/rs232.h"
 #include "ibm5085_pca.h"
 
@@ -41,7 +42,10 @@ public:
 		m_bootvect(*this, "bootvect"),
 		m_diag_leds(*this, "led%u", 0U),
 		m_mcheck_led(*this, "mcheck_led"),
+		m_uart_int(*this, "uart_int"),
 		m_periph12_uart(*this, "periph12_uart"),
+		m_periph34_uart(*this, "periph34_uart"),
+		m_rs232_uart(*this, "rs232_uart"),
 		m_test_switch(*this, "SWITCHES"),
 		m_si_board(*this, "si_board")
 	{
@@ -61,7 +65,10 @@ private:
 	memory_view m_bootvect;
 	output_finder<2> m_diag_leds;
 	output_finder<> m_mcheck_led;
+	required_device<input_merger_device> m_uart_int;
 	required_device<i8274_device> m_periph12_uart;
+	required_device<i8274_device> m_periph34_uart;
+	required_device<i8274_device> m_rs232_uart;
 	required_ioport m_test_switch;
 	required_device<ibm5085_si_device> m_si_board;
 
@@ -84,6 +91,7 @@ private:
 	void err_latch_w(u16 data);
 	u16 ext_bus_r(offs_t offset);
 
+	u8 uart_iack_r();
 	u16 berr_r(offs_t offset, u16 mem_mask);
 	void berr_w(offs_t offset, u16 data, u16 mem_mask);
 	bool ap_bus_error(offs_t address, u8 rw);
@@ -190,6 +198,8 @@ void ibm5085_state::io_map(address_map &map)
 	map(0x0c, 0x0f).mirror(0xb0).r(FUNC(ibm5085_state::ext_bus_r)).nopw();
 
 	map(0x40, 0x47).mirror(0x18).rw(m_periph12_uart, FUNC(i8274_device::ba_cd_r), FUNC(i8274_device::ba_cd_w)).umask16(0x00ff);
+	map(0x60, 0x67).mirror(0x18).rw(m_periph34_uart, FUNC(i8274_device::ba_cd_r), FUNC(i8274_device::ba_cd_w)).umask16(0x00ff);
+	map(0xC0, 0xC7).mirror(0x18).rw(m_rs232_uart, FUNC(i8274_device::ba_cd_r), FUNC(i8274_device::ba_cd_w)).umask16(0x00ff);
 
 }
 
@@ -197,7 +207,7 @@ void ibm5085_state::att_iack_map(address_map &map)
 {
 	map(0xfffff7, 0xfffff7).lr8(NAME([] () { return m68000_base_device::autovector(3); }));
 	map(0xfffff9, 0xfffff9).lr8(NAME([] () { return m68000_base_device::autovector(4); }));
-	map(0xfffffb, 0xfffffb).lr8(NAME([this] () -> u8 { return m_periph12_uart->inta_r(); }));
+	map(0xfffffb, 0xfffffb).r(FUNC(ibm5085_state::uart_iack_r));
 	map(0xfffffd, 0xfffffd).lr8(NAME([this] () -> u8 { m_att_cpu->set_input_line(M68K_IRQ_6, CLEAR_LINE); return 0x62; }));	// Floppy Drive
 	// level 7 (error NMI): U106 drives D1 with the error type, other bits PLACEHOLDER (assumed floating high)
 	map(0xffffff, 0xffffff).lr8(NAME([this] () -> u8 { m_att_cpu->set_input_line(M68K_IRQ_7, CLEAR_LINE); return 0xfd | (m_err_type ? 0x02 : 0x00); }));
@@ -285,6 +295,21 @@ u16 ibm5085_state::ext_bus_r(offs_t offset)
 	} else {
 		return m_err_addr & 0xffff;
 	}
+}
+
+u8 ibm5085_state::uart_iack_r()
+{
+	device_z80daisy_interface *const chain[] = { m_rs232_uart.target(), m_periph12_uart.target(), m_periph34_uart.target() };
+
+	for (device_z80daisy_interface *uart : chain)
+	{
+		int const state = uart->z80daisy_irq_state();
+		if (state & Z80_DAISY_INT)
+			return uart->z80daisy_irq_ack();   // same as inta_r(); marks that source in service
+		if (state & Z80_DAISY_IEO)
+			break;                             // in service: its /IPO blocks the chips below
+	}
+	return 0xff;                               // nobody drove the bus
 }
 
 u16 ibm5085_state::berr_r(offs_t offset, u16 mem_mask)
@@ -493,8 +518,16 @@ void ibm5085_state::ibm50852a(machine_config &config)
 	m_si_board->bus_read().set(FUNC(ibm5085_state::sysbus_r<MASTER_SI>));
 	m_si_board->bus_write().set(FUNC(ibm5085_state::sysbus_w<MASTER_SI>));
 
+	INPUT_MERGER_ANY_HIGH(config, m_uart_int).output_handler().set_inputline(m_att_cpu, M68K_IRQ_5);
+
 	I8274(config, m_periph12_uart, 4'000'000);
-	m_periph12_uart->out_int_callback().set_inputline(m_att_cpu, M68K_IRQ_5);
+	m_periph12_uart->out_int_callback().set(m_uart_int, FUNC(input_merger_device::in_w<0>));
+
+	I8274(config, m_periph34_uart, 4'000'000);
+	m_periph34_uart->out_int_callback().set(m_uart_int, FUNC(input_merger_device::in_w<1>));
+
+	I8274(config, m_rs232_uart, 4'000'000);
+	m_rs232_uart->out_int_callback().set(m_uart_int, FUNC(input_merger_device::in_w<2>));
 
 	clock_device &baud(CLOCK(config, "baud", 9600 * 16));
 	baud.signal_handler().set(m_periph12_uart, FUNC(i8274_device::rxca_w));
@@ -517,6 +550,42 @@ void ibm5085_state::ibm50852a(machine_config &config)
 	m_periph12_uart->out_txdb_callback().set(port_b, FUNC(rs232_port_device::write_txd));
 	m_periph12_uart->out_rtsb_callback().set(port_b, FUNC(rs232_port_device::write_rts));
 	m_periph12_uart->out_dtrb_callback().set(port_b, FUNC(rs232_port_device::write_dtr));
+
+	// U111 Port A
+	rs232_port_device &port_c(RS232_PORT(config, "port_c", periph_devices, nullptr));
+	port_c.rxd_handler().set(m_periph34_uart, FUNC(i8274_device::rxa_w));
+	port_c.cts_handler().set(m_periph34_uart, FUNC(i8274_device::ctsa_w));
+	port_c.dcd_handler().set(m_periph34_uart, FUNC(i8274_device::dcda_w));
+	m_periph34_uart->out_txda_callback().set(port_c, FUNC(rs232_port_device::write_txd));
+	m_periph34_uart->out_rtsa_callback().set(port_c, FUNC(rs232_port_device::write_rts));
+	m_periph34_uart->out_dtra_callback().set(port_c, FUNC(rs232_port_device::write_dtr));
+
+	// U111 Port B
+	rs232_port_device &port_d(RS232_PORT(config, "port_d", default_rs232_devices, nullptr));
+	port_d.rxd_handler().set(m_periph34_uart, FUNC(i8274_device::rxb_w));
+	port_d.cts_handler().set(m_periph34_uart, FUNC(i8274_device::ctsb_w));
+	port_d.dcd_handler().set(m_periph34_uart, FUNC(i8274_device::dcdb_w));
+	m_periph34_uart->out_txdb_callback().set(port_d, FUNC(rs232_port_device::write_txd));
+	m_periph34_uart->out_rtsb_callback().set(port_d, FUNC(rs232_port_device::write_rts));
+	m_periph34_uart->out_dtrb_callback().set(port_d, FUNC(rs232_port_device::write_dtr));
+
+	// U133 Port A
+	rs232_port_device &serial1(RS232_PORT(config, "serial1", default_rs232_devices, nullptr));
+	serial1.rxd_handler().set(m_rs232_uart, FUNC(i8274_device::rxb_w));
+	serial1.cts_handler().set(m_rs232_uart, FUNC(i8274_device::ctsb_w));
+	serial1.dcd_handler().set(m_rs232_uart, FUNC(i8274_device::dcdb_w));
+	m_rs232_uart->out_txdb_callback().set(serial1, FUNC(rs232_port_device::write_txd));
+	m_rs232_uart->out_rtsb_callback().set(serial1, FUNC(rs232_port_device::write_rts));
+	m_rs232_uart->out_dtrb_callback().set(serial1, FUNC(rs232_port_device::write_dtr));
+
+	// U133 Port B
+	rs232_port_device &serial2(RS232_PORT(config, "serial2", default_rs232_devices, nullptr));
+	serial2.rxd_handler().set(m_rs232_uart, FUNC(i8274_device::rxb_w));
+	serial2.cts_handler().set(m_rs232_uart, FUNC(i8274_device::ctsb_w));
+	serial2.dcd_handler().set(m_rs232_uart, FUNC(i8274_device::dcdb_w));
+	m_rs232_uart->out_txdb_callback().set(serial2, FUNC(rs232_port_device::write_txd));
+	m_rs232_uart->out_rtsb_callback().set(serial2, FUNC(rs232_port_device::write_rts));
+	m_rs232_uart->out_dtrb_callback().set(serial2, FUNC(rs232_port_device::write_dtr));
 
 	config.set_default_layout(layout_ibm5085);
 
