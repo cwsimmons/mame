@@ -67,6 +67,8 @@ private:
 
 	emu_timer *m_boot_timer = nullptr;
 	TIMER_CALLBACK_MEMBER(boot_timeout);
+	emu_timer *m_nmi_timer = nullptr;
+	TIMER_CALLBACK_MEMBER(nmi_check);
 
 	void att_map(address_map &map) ATTR_COLD;
 	void att_iack_map(address_map &map) ATTR_COLD;
@@ -84,6 +86,12 @@ private:
 
 	u16 berr_r(offs_t offset, u16 mem_mask);
 	void berr_w(offs_t offset, u16 data, u16 mem_mask);
+	bool ap_bus_error(offs_t address, u8 rw);
+
+	// Musashi takes a bus error inside the access, then finishes the instruction.
+	// These identify the faulting instruction so its leftover accesses can be dropped.
+	offs_t m_berr_ppc = ~offs_t(0);
+	offs_t m_berr_pc = ~offs_t(0);
 
 	u8 m_parity_even = 0;
 	std::unique_ptr<u8[]> m_parity_bits;
@@ -95,6 +103,7 @@ private:
 	u32 m_err_addr = 0;         // U100/U107/U115/U131 address snapshot
 	u8 m_err_status = 0;        // status byte captured with the address
 	bool m_err_type = false;    // what U106 drives onto D1 during the level 7 acknowledge
+	bool m_flag = false;        // U97 pin 21 (net352): D0 of the last FFF004 write, cleared at power-on
 	u8 m_bus_master = MASTER_AP;
 
 	void parity_update_tap();
@@ -114,6 +123,7 @@ private:
 void ibm5085_state::machine_start()
 {
 	m_boot_timer = timer_alloc(FUNC(ibm5085_state::boot_timeout), this);
+	m_nmi_timer = timer_alloc(FUNC(ibm5085_state::nmi_check), this);
 
 	m_parity_bits = std::make_unique<u8[]>(RAM_SIZE / 8);
 
@@ -125,6 +135,7 @@ void ibm5085_state::machine_start()
 	save_item(NAME(m_err_addr));
 	save_item(NAME(m_err_status));
 	save_item(NAME(m_err_type));
+	save_item(NAME(m_flag));
 	save_item(NAME(m_si_int));
 
 }
@@ -138,6 +149,7 @@ void ibm5085_state::machine_reset()
 	parity_update_tap();
 
 	m_err_latch = false;        // reset clears U106's latch
+	m_flag = false;             // U97 holds pin 21 reset until its power-on counter runs out
 	m_att_cpu->set_input_line(M68K_IRQ_7, CLEAR_LINE);
 }
 
@@ -169,7 +181,8 @@ void ibm5085_state::io_map(address_map &map)
 {
 	map(0x00, 0x01).mirror(0xb0).w(FUNC(ibm5085_state::parity_select_w)).nopr();
 	map(0x02, 0x03).mirror(0xb0).w(FUNC(ibm5085_state::diag_led_w)).nopr();
-	map(0x04, 0x05).mirror(0xb0).r(FUNC(ibm5085_state::testsw_r)).umask16(0x00ff).nopw();
+	map(0x04, 0x05).mirror(0xb0).r(FUNC(ibm5085_state::testsw_r)).umask16(0x00ff);
+	map(0x04, 0x05).mirror(0xb0).lw16(NAME([this] (u16 data) { m_flag = BIT(data, 0); }));   // U97 latches D0 at the end of the strobe
 	map(0x06, 0x07).mirror(0xb0).w(FUNC(ibm5085_state::periph_baud_w)).nopr();
 	map(0x08, 0x09).mirror(0xb0).w(FUNC(ibm5085_state::rs232_baud_w)).nopr();
 	map(0x0a, 0x0b).mirror(0xb0).r(FUNC(ibm5085_state::err_latch_r)).umask16(0x00ff);
@@ -224,9 +237,9 @@ u8 ibm5085_state::testsw_r()
 	// bit 3: Jumper W3 pins 1,2 (0 = installed, 1 = open), no hardware side effects
 	// bit 2: Jumper W3 pins 3,4 (0 = installed, 1 = open), no hardware side effects
 	// bit 1: Always 1 (Appears to be tied high)
-	// bit 0: Mystery PAL output
+	// bit 0: U97 pin 21 flag, read back through U114 (74ALS240)
 
-	u8 data = 0x7F;
+	u8 data = 0x7E | (m_flag ? 0x01 : 0x00);
 	data |= m_test_switch->read() & 0x80;
 
 	return data;
@@ -255,6 +268,7 @@ void ibm5085_state::err_latch_w(u16 data)
 	{
 		// D0=1: clear and re-arm
 		m_err_latch = false;
+		m_att_cpu->set_input_line(M68K_IRQ_7, CLEAR_LINE);   // the latch drives the level 7 request
 	}
 	else
 	{
@@ -282,9 +296,8 @@ u16 ibm5085_state::berr_r(offs_t offset, u16 mem_mask)
 
 		if (m_bus_master == MASTER_AP)
 		{
-			error_event(status, address, false);
-			m_att_cpu->set_buserror_details(address, 1, m_att_cpu->get_fc());   // 1 = read
-			m_att_cpu->set_input_line(M68K_LINE_BUSERROR, ASSERT_LINE);
+			if (ap_bus_error(address, 1))   // 1 = read
+				error_event(status, address, false);
 		}
 		else
 		{
@@ -292,6 +305,25 @@ u16 ibm5085_state::berr_r(offs_t offset, u16 mem_mask)
 		}
 	}
 	return 0xffff;
+}
+
+// Returns false for an access left over from an instruction that has already taken its bus error.
+// On hardware the 68010 aborts that instruction at the first faulting cycle, so the access never happens.
+bool ibm5085_state::ap_bus_error(offs_t address, u8 rw)
+{
+	if (m_att_cpu->pcbase() == m_berr_ppc && m_att_cpu->pc() == m_berr_pc)
+	{
+		LOG("Dropping access at %06x after bus error (%s)\n", address, machine().describe_context());
+		return false;
+	}
+
+	m_att_cpu->set_buserror_details(address, rw, m_att_cpu->get_fc());
+	m_att_cpu->set_input_line(M68K_LINE_BUSERROR, ASSERT_LINE);
+
+	// CURPC is still the faulting instruction; PC is now the handler's first instruction
+	m_berr_ppc = m_att_cpu->pcbase();
+	m_berr_pc = m_att_cpu->pc();
+	return true;
 }
 
 void ibm5085_state::berr_w(offs_t offset, u16 data, u16 mem_mask)
@@ -303,9 +335,8 @@ void ibm5085_state::berr_w(offs_t offset, u16 data, u16 mem_mask)
 
 		if (m_bus_master == MASTER_AP)
 		{
-			error_event(status, address, false);
-			m_att_cpu->set_buserror_details(address, 0, m_att_cpu->get_fc());   // 0 = write
-			m_att_cpu->set_input_line(M68K_LINE_BUSERROR, ASSERT_LINE);
+			if (ap_bus_error(address, 0))   // 0 = write
+				error_event(status, address, false);
 		}
 		else
 		{
@@ -396,8 +427,12 @@ void ibm5085_state::error_event(u8 status_bits, offs_t address, bool gen_int)
 {
 	if (m_err_latch)
 	{
-		LOG("Ignoring Bus Error 0x%02x at %06x (%s)\n", status_bits, address, machine().describe_context());
-		return;                 // only the first error is captured until FFF00A is written with 1
+		// Only the first error's address and master are captured until FFF00A is written with 1,
+		// but later error types still accumulate in the status byte. The diskette's backplane test
+		// ($6152) expects a timeout bit alongside an earlier parity error.
+		LOG("Accumulating Bus Error 0x%02x at %06x (%s)\n", status_bits, address, machine().describe_context());
+		m_err_status |= status_bits & 0x0f;
+		return;
 	}
 
 	LOG("Latching Bus Error 0x%02x at %06x (%s)\n", status_bits, address, machine().describe_context());
@@ -409,8 +444,18 @@ void ibm5085_state::error_event(u8 status_bits, offs_t address, bool gen_int)
 
 	if (gen_int)
 	{
-		m_att_cpu->set_input_line(M68K_IRQ_7, ASSERT_LINE);
+		// The 68010 only takes level 7 if it is still requested at the end of the instruction.
+		// Software can clear the latch within the same instruction (parity test at $52B6), which
+		// withdraws the request; Musashi would latch the edge regardless, so check afterwards.
+		m_nmi_timer->adjust(attotime::zero);
+		m_att_cpu->abort_timeslice();
 	}
+}
+
+TIMER_CALLBACK_MEMBER(ibm5085_state::nmi_check)
+{
+	if (m_err_latch)
+		m_att_cpu->set_input_line(M68K_IRQ_7, ASSERT_LINE);
 }
 
 void ibm5085_state::si_int_w(int state)
